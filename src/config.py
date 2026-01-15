@@ -7,6 +7,13 @@ class ConfigVal:
     def __float__(self):
         return self.val
 
+class ConfigBool:
+    def __init__(self, default: bool):
+        self.val = default
+
+    def __bool__(self):
+        return self.val
+
 class Config:
     def __init__(self):
         self.camera_distance = ConfigVal(300, 100, 500)
@@ -17,3 +24,6 @@ class Config:
         self.camera_lean_height_scale = ConfigVal(1.0, 0, 1)
         self.camera_lean_dist_scale = ConfigVal(0.1, 0, 1)
         self.camera_lean_min_height_clamp = ConfigVal(300, 0, 500)
+        
+        # Ball prediction
+        self.ball_prediction_enabled = ConfigBool(True)

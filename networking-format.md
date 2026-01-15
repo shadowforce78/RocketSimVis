@@ -51,6 +51,10 @@ The format for the gamestate, in pseudo-JSON, is:
 	OPTIONAL "boost_pad_locations": [ [<x>, <y>, <z>], [<x>, <y>, <z>], ... ],
 	
 	# If you don't provide this, no boost pads will be rendered
-	OPTIONAL "boost_pad_states": [ <bool>, <bool>, ... ]
+	OPTIONAL "boost_pad_states": [ <bool>, <bool>, ... ],
+	
+	# Ball prediction trajectory - list of future ball positions
+	# Can be toggled on/off in the settings menu
+	OPTIONAL "ball_prediction": [ [<x>, <y>, <z>], [<x>, <y>, <z>], ... ]
 }
 ```

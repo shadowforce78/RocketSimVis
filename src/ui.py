@@ -10,7 +10,7 @@ from PyQt5.QtCore import QSize, Qt, QTimer, QRect
 from PyQt5.QtGui import QScreen, QColor, QFontMetrics
 from PyQt5.Qt import QPainter, QWidget, pyqtSlot, QEvent
 
-from config import Config, ConfigVal
+from config import Config, ConfigVal, ConfigBool
 
 from const import WINDOW_SIZE_X, WINDOW_SIZE_Y
 
@@ -99,6 +99,33 @@ class QConfigVal(QWidget):
             self.config_val.val = self.slider.value()
         self.label.setText(self.get_beautified_name() + ": " + str(self.config_val.val))
 
+class QConfigBool(QWidget):
+    def __init__(self, name: str, config_bool: ConfigBool):
+        QWidget.__init__(self)
+
+        self.name = name
+        self.config_bool = config_bool
+
+        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAutoFillBackground(True)
+
+        self.layout = QtWidgets.QHBoxLayout(self)
+        self.layout.setAlignment(Qt.AlignLeft)
+
+        self.checkbox = QtWidgets.QCheckBox(self.get_beautified_name())
+        self.checkbox.setChecked(config_bool.val)
+        self.checkbox.stateChanged.connect(self.on_state_changed)
+
+        self.layout.addWidget(self.checkbox)
+
+    def get_beautified_name(self):
+        bname = self.name.replace('_', ' ').replace('  ', ' ').title()
+        return bname
+
+    @pyqtSlot()
+    def on_state_changed(self):
+        self.config_bool.val = self.checkbox.isChecked()
+
 class QEditConfigWidget(QWidget):
     SIZE = (300, 500)
 
@@ -128,6 +155,18 @@ class QEditConfigWidget(QWidget):
 
                 if name.startswith("camera_"):
                     self.camera_group_layout.addWidget(widget)
+
+        # Display group for toggles
+        self.display_group = QtWidgets.QGroupBox("Display")
+        self.display_group_layout = QtWidgets.QVBoxLayout(self)
+        self.display_group.setLayout(self.display_group_layout)
+        self.layout().addWidget(self.display_group)
+
+        for name, obj in self.config.__dict__.items():
+            if isinstance(obj, ConfigBool):
+                config_bool = obj
+                widget = QConfigBool(name, config_bool)
+                self.display_group_layout.addWidget(widget)
 
         self.footer_label = QtWidgets.QLabel("\n(Click outside this area to close settings)")
         # TODO: Kinda hacky, ideally use setDisabled(True) and add disabled color to stylesheet?

@@ -215,6 +215,9 @@ class GameState:
 
         self.gamemode = None
         self.render_state = RenderState()
+        
+        # Ball prediction: list of positions
+        self.ball_prediction = []
 
     def is_boost_big(self, idx):
         return self.boost_pad_locations[idx].z == 73
@@ -258,3 +261,9 @@ class GameState:
         self.render_state = RenderState()
         if not (j.get("render") is None):
             self.render_state.read_from_json(j["render"])
+
+        # Ball prediction
+        self.ball_prediction = []
+        if not (j.get("ball_prediction") is None):
+            for pos in j.get("ball_prediction"):
+                self.ball_prediction.append(Vector3(pos))

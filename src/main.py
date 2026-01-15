@@ -184,6 +184,15 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         )
         self.vaos["boost_text"] = self.boost_text_vao
 
+        # Make ball prediction line mesh
+        self.ball_pred_max_verts = 500
+        self.ball_pred_verts = np.zeros(self.ball_pred_max_verts * 3)
+        self.ball_pred_vbo = self.ctx.buffer(self.ball_pred_verts.astype("f4"))
+        self.ball_pred_vao = self.ctx.simple_vertex_array(
+            self.prog, self.ball_pred_vbo, "in_position"
+        )
+        self.vaos["ball_prediction"] = self.ball_pred_vao
+
         ############################################
 
         # Auto-enable multisampling if we have multiple samples
@@ -498,6 +507,70 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
             vert_amount=num_verts,
         )
 
+    def is_in_goal(self, pos):
+        """Check if a position is inside either goal"""
+        # Goal dimensions (approximate Rocket League values)
+        goal_y = 5120  # Distance from center to goal line
+        goal_half_width = 893  # Half width of goal
+        goal_height = 642  # Height of goal
+        goal_depth = 880  # Depth inside goal
+        
+        # Check if in blue goal (negative Y)
+        if pos.y < -goal_y and pos.y > -(goal_y + goal_depth):
+            if abs(pos.x) < goal_half_width and pos.z < goal_height:
+                return True
+        
+        # Check if in orange goal (positive Y)
+        if pos.y > goal_y and pos.y < (goal_y + goal_depth):
+            if abs(pos.x) < goal_half_width and pos.z < goal_height:
+                return True
+        
+        return False
+
+    def render_ball_prediction(self, prediction_points):
+        """Render the ball prediction trajectory as a line"""
+        if len(prediction_points) < 2:
+            return
+        
+        # Check if any point is in a goal
+        will_score = any(self.is_in_goal(p) for p in prediction_points)
+        
+        vertices = []
+        num_verts = 0
+        
+        # Create line segments between consecutive points (flattened x,y,z)
+        for i in range(len(prediction_points) - 1):
+            if num_verts >= self.ball_pred_max_verts - 2:
+                break
+            p1 = prediction_points[i]
+            p2 = prediction_points[i + 1]
+            vertices.extend([p1.x, p1.y, p1.z])
+            vertices.extend([p2.x, p2.y, p2.z])
+            num_verts += 2
+        
+        if num_verts < 2:
+            return
+        
+        # Pad to max size (3 floats per vertex)
+        while len(vertices) < self.ball_pred_max_verts * 3:
+            vertices.append(0.0)
+        
+        self.ball_pred_vbo.write(np.array(vertices).astype("f4"), 0)
+        
+        # Red if will score, yellow otherwise
+        if will_score:
+            color = Vector4((1.0, 0.2, 0.2, 1.0))  # Red
+        else:
+            color = Vector4((1.0, 0.8, 0.2, 1.0))  # Yellow
+        
+        glDisable(GL_CULL_FACE)
+        self.render_model(
+            None, None, None, "ball_prediction", self.t_none,
+            scale=1, global_color=color, mode=GL_LINES,
+            vert_amount=num_verts,
+        )
+        glEnable(GL_CULL_FACE)
+
     def calc_camera_state(self, state, interp_ratio, delta_time):
         pos = Vector3((-4000, 0, 1000))
         ball_pos = state.ball_state.get_pos(interp_ratio)
@@ -791,6 +864,75 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
                         RIBBON_LIFETIME / 10,
                         Vector4((1, 0.9, 0.4, 1)),
                     )
+
+        # Render ball prediction
+        if self.config.ball_prediction_enabled.val:
+            # If no prediction data from client, generate one from ball physics
+            prediction_points = state.ball_prediction
+            if len(prediction_points) < 2:
+                # Generate trajectory prediction from ball physics with arena bounces
+                ball_pos = state.ball_state.get_pos(interp_ratio)
+                ball_vel = state.ball_state.get_vel(interp_ratio)
+                prediction_points = []
+                
+                # Physics constants
+                gravity = Vector3([0, 0, -650])  # Rocket League gravity
+                dt = 1/60  # Time step
+                ball_radius = 93
+                bounce_damping = 0.6
+                
+                # Arena dimensions
+                arena_x = 4096 - ball_radius  # Side walls
+                arena_y = 5120 - ball_radius  # Back walls (goal line)
+                arena_z_max = 2044 - ball_radius  # Ceiling
+                arena_z_min = ball_radius  # Floor
+                
+                # Goal dimensions
+                goal_half_width = 893
+                goal_height = 642
+                
+                pos = Vector3(ball_pos)
+                vel = Vector3(ball_vel)
+                
+                for _ in range(240):  # ~4 seconds of prediction
+                    prediction_points.append(Vector3(pos))
+                    
+                    # Apply gravity
+                    vel = vel + gravity * dt
+                    pos = pos + vel * dt
+                    
+                    # Floor bounce
+                    if pos.z < arena_z_min:
+                        pos.z = arena_z_min
+                        vel.z = abs(vel.z) * bounce_damping
+                    
+                    # Ceiling bounce
+                    if pos.z > arena_z_max:
+                        pos.z = arena_z_max
+                        vel.z = -abs(vel.z) * bounce_damping
+                    
+                    # Side walls (X) bounce
+                    if pos.x > arena_x:
+                        pos.x = arena_x
+                        vel.x = -abs(vel.x) * bounce_damping
+                    elif pos.x < -arena_x:
+                        pos.x = -arena_x
+                        vel.x = abs(vel.x) * bounce_damping
+                    
+                    # Back walls (Y) bounce - but not if in goal area
+                    in_goal_area = abs(pos.x) < goal_half_width and pos.z < goal_height
+                    
+                    if pos.y > arena_y:
+                        if not in_goal_area:
+                            pos.y = arena_y
+                            vel.y = -abs(vel.y) * bounce_damping
+                    elif pos.y < -arena_y:
+                        if not in_goal_area:
+                            pos.y = -arena_y
+                            vel.y = abs(vel.y) * bounce_damping
+            
+            if len(prediction_points) >= 2:
+                self.render_ball_prediction(prediction_points)
 
         ###########################################
 
