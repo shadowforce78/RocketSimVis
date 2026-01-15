@@ -59,6 +59,12 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
         self.last_fps = 0
         self.prev_state = None  # type: GameState
 
+        # Score tracking
+        self.blue_score = 0
+        self.orange_score = 0
+        self.prev_ball_pos = None
+        self.goal_cooldown = 0  # Prevent multiple detections
+
         ########################################################################
 
         self.samples = 4
@@ -192,6 +198,15 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
             self.prog, self.ball_pred_vbo, "in_position"
         )
         self.vaos["ball_prediction"] = self.ball_pred_vao
+
+        # Make score text mesh
+        self.score_text_max_verts = 200
+        self.score_text_verts = np.zeros(self.score_text_max_verts * 3)
+        self.score_text_vbo = self.ctx.buffer(self.score_text_verts.astype("f4"))
+        self.score_text_vao = self.ctx.simple_vertex_array(
+            self.prog, self.score_text_vbo, "in_position"
+        )
+        self.vaos["score_text"] = self.score_text_vao
 
         ############################################
 
@@ -506,6 +521,174 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
             scale=1, global_color=Vector4((1.0, 1.0, 1.0, 1.0)), mode=GL_LINES,
             vert_amount=num_verts,
         )
+
+    def check_goal_scored(self, ball_pos):
+        """Check if a goal was scored and update score"""
+        if self.goal_cooldown > 0:
+            self.goal_cooldown -= 1
+            return
+        
+        goal_y = 5120
+        goal_half_width = 893
+        goal_height = 642
+        
+        in_goal_x = abs(ball_pos.x) < goal_half_width
+        in_goal_z = ball_pos.z < goal_height
+        
+        # Blue scores (ball in orange goal, positive Y)
+        if ball_pos.y > goal_y + 50 and in_goal_x and in_goal_z:
+            self.blue_score += 1
+            self.goal_cooldown = 120  # ~2 seconds cooldown
+            
+        # Orange scores (ball in blue goal, negative Y)  
+        elif ball_pos.y < -(goal_y + 50) and in_goal_x and in_goal_z:
+            self.orange_score += 1
+            self.goal_cooldown = 120
+
+    def render_score_hud(self, width, height):
+        """Render the score at the top of the screen"""
+        # Set up orthographic projection for 2D rendering
+        ortho = Matrix44.orthogonal_projection(0, width, 0, height, -1, 1)
+        self.pr_m_vp.write(ortho.astype("f4"))
+        self.pr_m_model.write(Matrix44.identity().astype("f4"))
+        
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        glDisable(GL_CULL_FACE)
+        
+        # Draw score at top center
+        center_x = width / 2
+        top_y = height - 40
+        
+        # Draw the scores
+        self._draw_score_text(center_x, top_y, self.blue_score, self.orange_score)
+        
+        glEnable(GL_CULL_FACE)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+    
+    def _draw_score_text(self, center_x, center_y, blue_score, orange_score):
+        """Draw the score text (blue - orange)"""
+        SEGMENTS = {
+            '0': [0, 1, 2, 3, 4, 5],
+            '1': [1, 2],
+            '2': [0, 1, 3, 4, 6],
+            '3': [0, 1, 2, 3, 6],
+            '4': [1, 2, 5, 6],
+            '5': [0, 2, 3, 5, 6],
+            '6': [0, 2, 3, 4, 5, 6],
+            '7': [0, 1, 2],
+            '8': [0, 1, 2, 3, 4, 5, 6],
+            '9': [0, 1, 2, 3, 5, 6],
+            '-': [6],
+        }
+        
+        SEG_COORDS = [
+            (-0.5, 1.0, 0.5, 1.0),     # 0: top
+            (0.5, 1.0, 0.5, 0.0),      # 1: top-right
+            (0.5, 0.0, 0.5, -1.0),     # 2: bottom-right
+            (-0.5, -1.0, 0.5, -1.0),   # 3: bottom
+            (-0.5, 0.0, -0.5, -1.0),   # 4: bottom-left
+            (-0.5, 1.0, -0.5, 0.0),    # 5: top-left
+            (-0.5, 0.0, 0.5, 0.0),     # 6: middle
+        ]
+        
+        blue_text = str(blue_score)
+        orange_text = str(orange_score)
+        
+        char_height = 36
+        char_width = 22
+        spacing = 6
+        dash_spacing = 20
+        
+        vertices = []
+        colors = []  # We'll render in two passes for different colors
+        
+        # Calculate positions
+        blue_width = len(blue_text) * char_width + (len(blue_text) - 1) * spacing
+        orange_width = len(orange_text) * char_width + (len(orange_text) - 1) * spacing
+        
+        # Blue score on the left
+        blue_start_x = center_x - dash_spacing - blue_width
+        # Orange score on the right
+        orange_start_x = center_x + dash_spacing
+        
+        blue_vertices = []
+        orange_vertices = []
+        dash_vertices = []
+        
+        # Draw blue score
+        for idx, char in enumerate(blue_text):
+            if char not in SEGMENTS:
+                continue
+            char_center_x = blue_start_x + idx * (char_width + spacing) + char_width / 2
+            for seg_idx in SEGMENTS[char]:
+                sx, sy, ex, ey = SEG_COORDS[seg_idx]
+                x1 = char_center_x + sx * char_width * 0.5
+                y1 = center_y + sy * char_height * 0.5
+                x2 = char_center_x + ex * char_width * 0.5
+                y2 = center_y + ey * char_height * 0.5
+                blue_vertices.extend([x1, y1, 0, x2, y2, 0])
+        
+        # Draw dash in center
+        dash_char = '-'
+        for seg_idx in SEGMENTS[dash_char]:
+            sx, sy, ex, ey = SEG_COORDS[seg_idx]
+            x1 = center_x + sx * char_width * 0.5
+            y1 = center_y + sy * char_height * 0.5
+            x2 = center_x + ex * char_width * 0.5
+            y2 = center_y + ey * char_height * 0.5
+            dash_vertices.extend([x1, y1, 0, x2, y2, 0])
+        
+        # Draw orange score
+        for idx, char in enumerate(orange_text):
+            if char not in SEGMENTS:
+                continue
+            char_center_x = orange_start_x + idx * (char_width + spacing) + char_width / 2
+            for seg_idx in SEGMENTS[char]:
+                sx, sy, ex, ey = SEG_COORDS[seg_idx]
+                x1 = char_center_x + sx * char_width * 0.5
+                y1 = center_y + sy * char_height * 0.5
+                x2 = char_center_x + ex * char_width * 0.5
+                y2 = center_y + ey * char_height * 0.5
+                orange_vertices.extend([x1, y1, 0, x2, y2, 0])
+        
+        # Render blue score
+        if len(blue_vertices) >= 6:
+            num_blue = len(blue_vertices) // 3
+            padded = blue_vertices.copy()
+            while len(padded) < self.score_text_max_verts * 3:
+                padded.append(0.0)
+            self.score_text_vbo.write(np.array(padded).astype("f4"), 0)
+            self.render_model(
+                None, None, None, "score_text", self.t_none,
+                scale=1, global_color=Vector4((0.2, 0.6, 1.0, 1.0)), mode=GL_LINES,
+                vert_amount=num_blue,
+            )
+        
+        # Render dash (white)
+        if len(dash_vertices) >= 6:
+            num_dash = len(dash_vertices) // 3
+            padded = dash_vertices.copy()
+            while len(padded) < self.score_text_max_verts * 3:
+                padded.append(0.0)
+            self.score_text_vbo.write(np.array(padded).astype("f4"), 0)
+            self.render_model(
+                None, None, None, "score_text", self.t_none,
+                scale=1, global_color=Vector4((1.0, 1.0, 1.0, 1.0)), mode=GL_LINES,
+                vert_amount=num_dash,
+            )
+        
+        # Render orange score
+        if len(orange_vertices) >= 6:
+            num_orange = len(orange_vertices) // 3
+            padded = orange_vertices.copy()
+            while len(padded) < self.score_text_max_verts * 3:
+                padded.append(0.0)
+            self.score_text_vbo.write(np.array(padded).astype("f4"), 0)
+            self.render_model(
+                None, None, None, "score_text", self.t_none,
+                scale=1, global_color=Vector4((1.0, 0.6, 0.2, 1.0)), mode=GL_LINES,
+                vert_amount=num_orange,
+            )
 
     def is_in_goal(self, pos):
         """Check if a position is inside either goal"""
@@ -988,6 +1171,13 @@ class QRSVGLWidget(QtOpenGL.QGLWidget):
             + "\n"
         )
         get_ui().set_text(ui_text)
+
+        # Check for goals
+        ball_pos = state.ball_state.get_pos(interp_ratio)
+        self.check_goal_scored(ball_pos)
+
+        # Render score HUD at top
+        self.render_score_hud(width, height)
 
         # Render boost HUD in screen space
         is_spectating = self.spectate_idx > -1 and self.spectate_idx < len(state.car_states)
