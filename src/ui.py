@@ -181,6 +181,7 @@ class QUIBarWidget(QWidget):
 def get_ui() -> QUIBarWidget:
     return _g_ui_widget
 
+
 class QRSVWindow(QtWidgets.QMainWindow):
     def __init__(self, gl_widget):
         super().__init__()
